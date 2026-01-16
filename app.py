@@ -2,172 +2,166 @@ import streamlit as st
 import pandas as pd
 import re
 import io
-import time
 from openpyxl.styles import Alignment, PatternFill, Border, Side
 
-# Selenium Imports
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from webdriver_manager.chrome import ChromeDriverManager
+# --- NEW: PROPERTY DATABASE ---
+# Add your property details here. The key must match the name in your Excel 'property' column.
+PROPERTY_DETAILS = {
+    "Example Residency": {
+        "Amenities": "Gym, Pool, Clubhouse",
+        "Towers": 4,
+        "Floors": 22,
+        "Units": 450,
+        "Possession": "Dec 2027"
+    },
+    # Add more properties as needed
+}
 
-# --- NEW: ADVANCED PROJECT DATA SEARCH ---
-def fetch_project_metadata_live(project_name):
-    """
-    Powerful search-based extraction. It looks for numbers near keywords 
-    like 'floors', 'towers', and 'possession' across search snippets.
-    """
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36")
-    
-    driver = None
-    try:
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        
-        # Searching via Bing (Less bot-protection for Snippet Reading)
-        search_query = f"{project_name} Pune magicbricks housing possession towers floors units"
-        driver.get(f"https://www.bing.com/search?q={search_query.replace(' ', '+')}")
-        time.sleep(4)
-        
-        # Capture the entire search result text
-        raw_text = driver.find_element(By.TAG_NAME, "body").text.lower()
-        driver.quit()
+def get_property_metadata(prop_name, field):
+    """Helper to fetch property details from our dictionary."""
+    details = PROPERTY_DETAILS.get(prop_name, {})
+    return details.get(field, "N/A")
 
-        # --- DATA PATTERN RECOGNITION ---
-        
-        # 1. Amenities (Counting common words or looking for "XX+ amenities")
-        amn_match = re.search(r'(\d+)\s*\+?\s*amenities', raw_text)
-        amenities = f"{amn_match.group(1)}+" if amn_match else "30+"
-        
-        # 2. Tower Count
-        t_match = re.search(r'(\d+)\s*(?:towers?|wings?|buildings?)', raw_text)
-        towers = t_match.group(1) if t_match else "N/A"
-        
-        # 3. Floor Count (Looking for G+X, X floors, X storeys)
-        f_match = re.search(r'(?:g|p|b)\s*\+\s*(\d+)', raw_text)
-        if not f_match:
-            f_match = re.search(r'(\d+)\s*(?:floors?|storeys?|levels?)', raw_text)
-        floors = f"G+{f_match.group(1)}" if f_match else "N/A"
-        
-        # 4. Total Units
-        u_match = re.search(r'(\d{2,4})\s*(?:units?|apartments?|flats?|homes?)', raw_text)
-        units = u_match.group(1) if u_match else "N/A"
-        
-        # 5. Possession Date (Regex for Month Year)
-        p_match = re.search(r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s*,?\s*(\d{4})', raw_text)
-        possession = f"{p_match.group(1).capitalize()}, {p_match.group(2)}" if p_match else "N/A"
-
-        return [amenities, towers, floors, units, possession]
-    except:
-        if driver: driver.quit()
-        return ["N/A"] * 5
-
-# --- AREA & BHK LOGIC (UNCHANGED) ---
 def extract_area_logic(text):
     if pd.isna(text) or text == "": return 0.0
-    text = " ".join(str(text).split()).replace(' ,', ',').replace(', ', ',')
+    text = " ".join(str(text).split())
+    text = text.replace(' ,', ',').replace(', ', ',')
+    
     m_unit = r'(?:चौ\.?\s*मी\.?|चौरस\s*मी[टत]र|sq\.?\s*m(?:tr)?\.?)'
+    f_unit = r'(?:चौ\.?\s*फू\.?|चौरस\s*फु[टत]|sq\.?\s*f(?:t)?\.?)'
+    total_keywords = r'(?:ए[ककु]ण\s*क्षेत्र|क्षेत्रफळ|total\s*area)'
+    
     m_segments = re.split(f'(\d+\.?\d*)\s*{m_unit}', text, flags=re.IGNORECASE)
-    m_vals = [float(m_segments[i]) for i in range(1, len(m_segments), 2) 
-              if 0 < float(m_segments[i]) < 500 and not any(w in m_segments[i-1].lower() for w in ["पार्किंग", "पार्कींग", "parking"])]
-    return round(sum(m_vals), 3) if m_vals else 0.0
+    m_vals = []
+    for i in range(1, len(m_segments), 2):
+        val = float(m_segments[i])
+        context_before = m_segments[i-1].lower()
+        parking_keywords = ["पार्किंग", "पार्कींग", "parking"]
+        is_parking = any(word in context_before for word in parking_keywords)
+        if 0 < val < 500 and not is_parking:
+            m_vals.append(val)
+    
+    if m_vals:
+        t_m_match = re.search(rf'{total_keywords}\s*:?\s*(\d+\.?\d*)\s*{m_unit}', text, re.IGNORECASE)
+        if t_m_match: return round(float(t_m_match.group(1)), 3)
+        if len(m_vals) > 1 and abs(m_vals[-1] - sum(m_vals[:-1])) < 1: return round(m_vals[-1], 3)
+        return round(sum(m_vals), 3)
+        
+    f_segments = re.split(f'(\d+\.?\d*)\s*{f_unit}', text, flags=re.IGNORECASE)
+    f_vals = []
+    for i in range(1, len(f_segments), 2):
+        val = float(f_segments[i])
+        context_before = f_segments[i-1].lower()
+        parking_keywords = ["पार्किंग", "पार्कींग", "parking"]
+        is_parking = any(word in context_before for word in parking_keywords)
+        if 0 < val < 5000 and not is_parking:
+            f_vals.append(val)
+                
+    if f_vals:
+        t_f_match = re.search(rf'{total_keywords}\s*:?\s*(\d+\.?\d*)\s*{f_unit}', text, re.IGNORECASE)
+        if t_f_match: return round(float(t_f_match.group(1)) / 10.764, 3)
+        if len(f_vals) > 1 and abs(f_vals[-1] - sum(f_vals[:-1])) < 1: return round(f_vals[-1] / 10.764, 3)
+        return round(sum(f_vals) / 10.764, 3)
+    return 0.0
 
 def determine_config(area, t1, t2, t3):
     if area == 0: return "N/A"
-    return "1 BHK" if area < t1 else "2 BHK" if area < t2 else "3 BHK" if area < t3 else "4 BHK"
+    if area < t1: return "1 BHK"
+    elif area < t2: return "2 BHK"
+    elif area < t3: return "3 BHK"
+    else: return "4 BHK"
 
-# --- FORMATTING (GLOBAL CENTER ALIGN & BLACK BORDERS) ---
-def apply_excel_formatting(df, writer, sheet_name, is_summary=True, show_extra=False):
+def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
     df.to_excel(writer, sheet_name=sheet_name, index=False)
     worksheet = writer.sheets[sheet_name]
-    center = Alignment(horizontal='center', vertical='center')
-    border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+    center_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
     colors = ["A2D2FF", "FFD6A5", "CAFFBF", "FDFFB6", "FFADAD", "BDB2FF", "9BF6FF"]
-
-    # Global Alignment
-    for r in range(1, worksheet.max_row + 1):
-        for c in range(1, worksheet.max_column + 1):
-            cell = worksheet.cell(row=r, column=c)
-            cell.alignment = center
-            if is_summary: cell.border = border
+    
+    color_idx = 0
+    start_row_prop = 2
+    start_row_cfg = 2
+    
+    for i in range(1, worksheet.max_row + 1):
+        for j in range(1, worksheet.max_column + 1):
+            cell = worksheet.cell(row=i, column=j)
+            cell.alignment = center_align
+            if is_summary: cell.border = thin_border
 
     if is_summary:
-        color_idx, start_prop, start_cfg = 0, 2, 2
         for i in range(2, len(df) + 2):
-            curr_p, next_p = df.iloc[i-2, 0], df.iloc[i-1, 0] if i-1 < len(df) else None
+            curr_prop = df.iloc[i-2, 0]
+            next_prop = df.iloc[i-1, 0] if i-1 < len(df) else None
             fill = PatternFill(start_color=colors[color_idx % len(colors)], end_color=colors[color_idx % len(colors)], fill_type="solid")
-            for col in range(1, len(df.columns) + 1): worksheet.cell(row=i, column=col).fill = fill
+            for col in range(1, len(df.columns) + 1):
+                worksheet.cell(row=i, column=col).fill = fill
             
-            if curr_p != next_p:
-                m_cols = [1]
-                if show_extra: m_cols.extend(range(len(df.columns)-4, len(df.columns)+1))
-                for c_idx in m_cols:
-                    if i > start_prop:
-                        worksheet.merge_cells(start_row=start_prop, start_column=c_idx, end_row=i, end_column=c_idx)
-                color_idx, start_prop = color_idx + 1, i + 1
-            
-            if [df.iloc[i-2,0], df.iloc[i-2,1]] != ([df.iloc[i-1,0], df.iloc[i-1,1]] if i-1 < len(df) else None):
-                if i > start_cfg: worksheet.merge_cells(start_row=start_cfg, start_column=2, end_row=i, end_column=2)
-                start_cfg = i + 1
+            if curr_prop != next_prop:
+                # Merge logic for Property and New Metadata Columns (Columns 1, 10, 11, 12, 13, 14)
+                # We merge Property name and the new details which are same for the whole property
+                for col_to_merge in [1, 10, 11, 12, 13, 14]:
+                    if i >= start_row_prop:
+                        worksheet.merge_cells(start_row=start_row_prop, start_column=col_to_merge, end_row=i, end_column=col_to_merge)
+                
+                color_idx += 1
+                start_row_prop = i + 1
+
+            # Merge logic for Configuration (Column 2)
+            curr_cfg_key = [df.iloc[i-2, 0], df.iloc[i-2, 1]]
+            next_cfg_key = [df.iloc[i-1, 0], df.iloc[i-1, 1]] if i-1 < len(df) else None
+            if curr_cfg_key != next_cfg_key:
+                if i >= start_row_cfg:
+                    worksheet.merge_cells(start_row=start_row_cfg, start_column=2, end_row=i, end_column=2)
+                start_row_cfg = i + 1
 
 # --- STREAMLIT UI ---
-st.set_page_config(page_title="Property Analytics Pro", layout="wide")
-st.title("🏠 Automated Property Analyst (Live Web Search)")
+st.set_page_config(page_title="Real Estate Dashboard", layout="wide")
+st.sidebar.header("Calculation Settings")
+loading_factor = st.sidebar.number_input("Loading Factor", min_value=1.0, value=1.35, step=0.001, format="%.3f")
+t1 = st.sidebar.number_input("1 BHK Threshold (<)", value=600)
+t2 = st.sidebar.number_input("2 BHK Threshold (<)", value=850)
+t3 = st.sidebar.number_input("3 BHK Threshold (<)", value=1100)
 
-st.sidebar.header("Settings")
-loading = st.sidebar.number_input("Loading Factor", value=1.35)
-t1 = st.sidebar.number_input("1 BHK <", value=600); t2 = st.sidebar.number_input("2 BHK <", value=850); t3 = st.sidebar.number_input("3 BHK <", value=1100)
-show_extra = st.sidebar.checkbox("Fetch Project Details (Live Web Search)")
-
-uploaded_file = st.file_uploader("Upload Raw Excel File", type="xlsx")
+uploaded_file = st.file_uploader("Upload Excel File (.xlsx)", type="xlsx")
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
     clean_cols = {c.lower().strip(): c for c in df.columns}
-    desc, cons, prop = clean_cols.get('property description'), clean_cols.get('consideration value'), clean_cols.get('property')
+    desc_col, cons_col, prop_col = clean_cols.get('property description'), clean_cols.get('consideration value'), clean_cols.get('property')
     
-    if desc and cons and prop:
-        with st.spinner('Calculating Area Statistics...'):
-            df['Carpet Area (SQ.MT)'] = df[desc].apply(extract_area_logic)
+    if desc_col and cons_col and prop_col:
+        with st.spinner('Calculating and Formatting...'):
+            df['Carpet Area (SQ.MT)'] = df[desc_col].apply(extract_area_logic)
             df['Carpet Area (SQ.FT)'] = (df['Carpet Area (SQ.MT)'] * 10.764).round(3)
-            df['Saleable Area'] = (df['Carpet Area (SQ.FT)'] * loading).round(3)
-            df['APR'] = df.apply(lambda r: round(r[cons]/r['Saleable Area'], 3) if r['Saleable Area'] > 0 else 0, axis=1)
+            df['Saleable Area'] = (df['Carpet Area (SQ.FT)'] * loading_factor).round(3)
+            df['APR'] = df.apply(lambda r: round(r[cons_col]/r['Saleable Area'], 3) if r['Saleable Area'] > 0 else 0, axis=1)
             df['Configuration'] = df['Carpet Area (SQ.FT)'].apply(lambda x: determine_config(x, t1, t2, t3))
-        
-        valid_df = df[df['Carpet Area (SQ.FT)'] > 0].sort_values([prop, 'Configuration', 'Carpet Area (SQ.FT)'])
-        summary = valid_df.groupby([prop, 'Configuration', 'Carpet Area (SQ.FT)']).agg(
-            Min_APR=('APR', 'min'), Max_APR=('APR', 'max'), Avg_APR=('APR', 'mean'),
-            Median_APR=('APR', 'median'), Mode_APR=('APR', lambda x: x.mode().iloc[0] if not x.mode().empty else 0),
-            Property_Count=(prop, 'count')
-        ).reset_index()
-        summary.columns = ['Property', 'Configuration', 'Carpet Area(SQ.FT)', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR', 'Count of Property']
-
-        if show_extra:
-            unique_projects = summary['Property'].unique()
-            project_map = {}
-            for p in unique_projects:
-                with st.spinner(f"Analyzing Web Data for: {p}..."):
-                    project_map[p] = fetch_project_metadata_live(p)
             
-            extra_cols = ["Amenities", "Towers", "Floors", "Total Units", "Possession"]
-            for i, col in enumerate(extra_cols):
-                summary[col] = summary['Property'].apply(lambda x: project_map[x][i])
-
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, sheet_name='Raw Data', index=False)
-            ws_raw = writer.sheets['Raw Data']
-            for r in range(1, ws_raw.max_row+1):
-                for c in range(1, ws_raw.max_column+1):
-                    ws_raw.cell(row=r, column=c).alignment = Alignment(horizontal='center', vertical='center')
+            valid_df = df[df['Carpet Area (SQ.FT)'] > 0].sort_values([prop_col, 'Configuration', 'Carpet Area (SQ.FT)'])
+            summary = valid_df.groupby([prop_col, 'Configuration', 'Carpet Area (SQ.FT)']).agg(
+                Min_APR=('APR', 'min'), Max_APR=('APR', 'max'), Avg_APR=('APR', 'mean'),
+                Median_APR=('APR', 'median'),
+                Mode_APR=('APR', lambda x: x.mode().iloc[0] if not x.mode().empty else 0),
+                Property_Count=(prop_col, 'count')
+            ).reset_index()
             
-            apply_excel_formatting(summary, writer, 'Summary', show_extra=show_extra)
-        
-        st.success("Analysis Complete!")
-        st.dataframe(summary)
-        st.download_button("📥 Download Excel Report", data=output.getvalue(), file_name="Property_Summary_Report.xlsx")
+            summary.columns = ['Property', 'Configuration', 'Carpet Area(SQ.FT)', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR', 'Count of Property']
+            
+            # --- NEW: ADDING THE METADATA COLUMNS ---
+            summary['Amenities'] = summary['Property'].apply(lambda x: get_property_metadata(x, 'Amenities'))
+            summary['Towers'] = summary['Property'].apply(lambda x: get_property_metadata(x, 'Towers'))
+            summary['Floors'] = summary['Property'].apply(lambda x: get_property_metadata(x, 'Floors'))
+            summary['Units'] = summary['Property'].apply(lambda x: get_property_metadata(x, 'Units'))
+            summary['Possession'] = summary['Property'].apply(lambda x: get_property_metadata(x, 'Possession'))
+
+            summary[['Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR']] = summary[['Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR']].round(3)
+
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                apply_excel_formatting(df, writer, 'Raw Data', is_summary=False)
+                apply_excel_formatting(summary, writer, 'Summary', is_summary=True)
+            
+            st.success("Analysis Complete!")
+            st.download_button(label="📥 Download Formatted Excel Report", data=output.getvalue(), file_name="Property_Analysis_Professional.xlsx")
+    else:
+        st.error("Missing required columns: Property Description, Consideration Value, or Property.")
