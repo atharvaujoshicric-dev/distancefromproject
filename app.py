@@ -14,89 +14,86 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-# --- RERA SCRAPING LOGIC ---
+# --- REFINED RERA SCRAPING LOGIC ---
 def fetch_rera_details(project_name):
-    """
-    Automated logic to search MahaRERA, switch windows, and extract 5 columns.
-    """
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--window-size=1920,1080")
+    # Spoofer: Makes the server think a real human is visiting
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
     
     driver = None
     try:
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
-        wait = WebDriverWait(driver, 15)
+        wait = WebDriverWait(driver, 20)
         
-        # 1. Navigate to Search
+        # 1. Navigate to MahaRERA
         driver.get("https://maharerait.mahaonline.gov.in/SearchList/Search")
         
-        # 2. Select 'Registered Projects' Radio Button (Crucial step)
-        project_radio = wait.until(EC.element_to_be_clickable((By.ID, "Promoter")))
-        project_radio.click()
+        # 2. Select 'Registered Projects'
+        radio = wait.until(EC.element_to_be_clickable((By.ID, "Promoter")))
+        driver.execute_script("arguments[0].click();", radio)
         
-        # 3. Input Project Name
-        search_box = driver.find_element(By.ID, "ProjectName")
-        search_box.clear()
-        search_box.send_keys(project_name)
-        
-        # Click Search
+        # 3. Search Project
+        input_box = driver.find_element(By.ID, "ProjectName")
+        input_box.send_keys(project_name)
         driver.find_element(By.ID, "btnSearch").click()
-        time.sleep(3) # Wait for AJAX results
+        time.sleep(4)
         
-        # 4. Click 'View Details'
-        view_btn = wait.until(EC.element_to_be_clickable((By.LINK_TEXT, "View Details")))
-        view_btn.click()
-        time.sleep(2)
+        # 4. Click 'View Details' (Using JS click to avoid overlays)
+        view_links = driver.find_elements(By.LINK_TEXT, "View Details")
+        if not view_links:
+            driver.quit()
+            return ["N/A"] * 5
+        driver.execute_script("arguments[0].click();", view_links[0])
+        time.sleep(5)
         
-        # 5. SWITCH TO NEW WINDOW (RERA opens details in a pop-up)
-        if len(driver.window_handles) > 1:
-            driver.switch_to.window(driver.window_handles[1])
+        # 5. WINDOW SWITCHING (Crucial for RERA)
+        main_window = driver.current_window_handle
+        for handle in driver.window_handles:
+            if handle != main_window:
+                driver.switch_to.window(handle)
+                break
         
-        # 6. Extraction Logic
-        # A. Possession Date
-        try:
-            possession = wait.until(EC.presence_of_element_located((By.XPATH, "//td[contains(text(),'Proposed Date of Completion')]/following-sibling::td"))).text
-        except: possession = "N/A"
+        # 6. Extraction using highly flexible XPATHs
+        def get_text(xpath):
+            try: return wait.until(EC.presence_of_element_located((By.XPATH, xpath))).text
+            except: return "N/A"
 
-        # B. Towers (Count rows in building details)
-        try:
-            towers_count = len(driver.find_elements(By.XPATH, "//table[@id='BuildingDetails']//tr")) - 1
-            towers = str(towers_count) if towers_count > 0 else "N/A"
-        except: towers = "N/A"
-
-        # C. Amenities (Count items in development table)
-        try:
-            amenity_items = driver.find_elements(By.XPATH, "//div[@id='DivDevelopmentWork']//table//tr")
-            amenities = f"{len(amenity_items)}+" if len(amenity_items) > 0 else "N/A"
-        except: amenities = "N/A"
-
-        # D. Floors (Structure)
-        try:
-            # Look for the max floor count in the building table
-            floor_cells = driver.find_elements(By.XPATH, "//table[@id='BuildingDetails']//td[5]")
-            max_floors = max([int(f.text) for f in floor_cells if f.text.isdigit()] + [0])
-            floors = f"G+{max_floors}" if max_floors > 0 else "N/A"
-        except: floors = "N/A"
-
-        # E. Total Units (Sum of inventory)
-        try:
-            unit_cells = driver.find_elements(By.XPATH, "//table[@id='BuildingDetails']//td[4]")
-            total_units = sum([int(u.text) for u in unit_cells if u.text.isdigit()])
-            units = str(total_units) if total_units > 0 else "N/A"
-        except: units = "N/A"
+        possession = get_text("//td[contains(text(),'Proposed Date of Completion')]/following-sibling::td")
+        
+        # Count Buildings
+        towers_list = driver.find_elements(By.XPATH, "//table[@id='BuildingDetails']//tr")
+        towers = str(len(towers_list) - 1) if len(towers_list) > 1 else "N/A"
+        
+        # Calculate Units and Floors from the table columns
+        units_total = 0
+        max_flr = 0
+        unit_cells = driver.find_elements(By.XPATH, "//table[@id='BuildingDetails']//td[4]")
+        floor_cells = driver.find_elements(By.XPATH, "//table[@id='BuildingDetails']//td[5]")
+        
+        for u in unit_cells:
+            if u.text.isdigit(): units_total += int(u.text)
+        for f in floor_cells:
+            if f.text.isdigit(): max_flr = max(max_flr, int(f.text))
+            
+        units = str(units_total) if units_total > 0 else "N/A"
+        floors = f"G+{max_flr}" if max_flr > 0 else "N/A"
+        
+        # Count Amenities from Development Table
+        amn_rows = driver.find_elements(By.XPATH, "//div[@id='DivDevelopmentWork']//tr")
+        amenities = f"{len(amn_rows)}+" if len(amn_rows) > 1 else "N/A"
 
         driver.quit()
         return [amenities, towers, floors, units, possession]
     
-    except Exception as e:
+    except Exception:
         if driver: driver.quit()
-        return ["Error"] * 5
+        return ["Not Found"] * 5
 
-# --- AREA EXTRACTION LOGIC ---
+# --- REMAINING AREA EXTRACTION LOGIC (Keep as is) ---
 def extract_area_logic(text):
     if pd.isna(text) or text == "": return 0.0
     text = " ".join(str(text).split()).replace(' ,', ',').replace(', ', ',')
@@ -115,7 +112,6 @@ def determine_config(area, t1, t2, t3):
     if area == 0: return "N/A"
     return "1 BHK" if area < t1 else "2 BHK" if area < t2 else "3 BHK" if area < t3 else "4 BHK"
 
-# --- EXCEL FORMATTING ---
 def apply_excel_formatting(df, writer, sheet_name, is_summary=True, show_extra=False):
     df.to_excel(writer, sheet_name=sheet_name, index=False)
     worksheet = writer.sheets[sheet_name]
@@ -142,20 +138,20 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True, show_extra=F
                     if i > start_prop: worksheet.merge_cells(start_row=start_prop, start_column=c_idx, end_row=i, end_column=c_idx)
                 color_idx, start_prop = color_idx + 1, i + 1
             
-            if [df.iloc[i-2,0], df.iloc[i-2,1]] != ([df.iloc[i-1,0], df.iloc[i-1,1]] if i-1 < len(df) else None):
+            if [df.iloc[i-2, 0], df.iloc[i-2, 1]] != ([df.iloc[i-1, 0], df.iloc[i-1, 1]] if i-1 < len(df) else None):
                 if i > start_cfg: worksheet.merge_cells(start_row=start_cfg, start_column=2, end_row=i, end_column=2)
                 start_cfg = i + 1
 
 # --- STREAMLIT APP ---
-st.set_page_config(page_title="RERA Analysis Dashboard", layout="wide")
-st.title("🏠 Property Analytics with Live RERA Scraper")
+st.set_page_config(page_title="RERA Analysis Tool", layout="wide")
+st.title("🏠 Real Estate Data Extractor & Scraper")
 
-st.sidebar.header("Calculation Settings")
+st.sidebar.header("Configuration")
 loading = st.sidebar.number_input("Loading Factor", value=1.35)
 t1 = st.sidebar.number_input("1 BHK <", value=600); t2 = st.sidebar.number_input("2 BHK <", value=850); t3 = st.sidebar.number_input("3 BHK <", value=1100)
-show_extra = st.sidebar.checkbox("Fetch Live RERA Data (Slow)")
+show_extra = st.sidebar.checkbox("Fetch Live RERA Data")
 
-uploaded_file = st.file_uploader("Upload Raw Excel File", type="xlsx")
+uploaded_file = st.file_uploader("Upload Raw Excel", type="xlsx")
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
@@ -163,7 +159,7 @@ if uploaded_file:
     desc, cons, prop = clean_cols.get('property description'), clean_cols.get('consideration value'), clean_cols.get('property')
     
     if desc and cons and prop:
-        with st.spinner('Extracting Area Data...'):
+        with st.spinner('Calculating Area...'):
             df['Carpet Area (SQ.MT)'] = df[desc].apply(extract_area_logic)
             df['Carpet Area (SQ.FT)'] = (df['Carpet Area (SQ.MT)'] * 10.764).round(3)
             df['Saleable Area'] = (df['Carpet Area (SQ.FT)'] * loading).round(3)
@@ -179,11 +175,10 @@ if uploaded_file:
         summary.columns = ['Property', 'Configuration', 'Carpet Area(SQ.FT)', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR', 'Count of Property']
 
         if show_extra:
-            st.warning("Fetching live data from MahaRERA. This will take ~15 seconds per project.")
             unique_projects = summary['Property'].unique()
             project_map = {}
             for p in unique_projects:
-                with st.spinner(f"Scraping {p}..."):
+                with st.spinner(f"Scraping RERA for: {p}"):
                     project_map[p] = fetch_rera_details(p)
             
             extra_cols = ["Amenities", "Towers", "Floors", "Total Units", "Possession"]
@@ -193,15 +188,13 @@ if uploaded_file:
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, sheet_name='Raw Data', index=False)
-            raw_sheet = writer.sheets['Raw Data']
-            for r in range(1, raw_sheet.max_row+1):
-                for c in range(1, raw_sheet.max_column+1):
-                    raw_sheet.cell(row=r, column=c).alignment = Alignment(horizontal='center', vertical='center')
+            raw_ws = writer.sheets['Raw Data']
+            for r in range(1, raw_ws.max_row+1):
+                for c in range(1, raw_ws.max_column+1):
+                    raw_ws.cell(row=r, column=c).alignment = Alignment(horizontal='center', vertical='center')
             
             apply_excel_formatting(summary, writer, 'Summary', show_extra=show_extra)
         
         st.success("Analysis Complete!")
         st.dataframe(summary)
-        st.download_button("📥 Download Excel Report", data=output.getvalue(), file_name="Property_Report.xlsx")
-    else:
-        st.error("Missing required columns: 'Property Description', 'Property', 'Consideration Value'.")
+        st.download_button("📥 Download Excel", data=output.getvalue(), file_name="Property_Report.xlsx")
