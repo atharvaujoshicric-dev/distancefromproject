@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import re
 import io
-from openpyxl.styles import Alignment
+from openpyxl.styles import Alignment, PatternFill
 
 def extract_area_logic(text):
     if pd.isna(text) or text == "": return 0.0
@@ -12,7 +12,6 @@ def extract_area_logic(text):
     f_unit = r'(?:चौ\.?\s*फू\.?|चौरस\s*फु[टत]|sq\.?\s*f(?:t)?\.?)'
     total_keywords = r'(?:ए[ककु]ण\s*क्षेत्र|क्षेत्रफळ|total\s*area)'
     
-    # Metric Extraction
     m_segments = re.split(f'(\d+\.?\d*)\s*{m_unit}', text, flags=re.IGNORECASE)
     m_vals = []
     for i in range(1, len(m_segments), 2):
@@ -27,7 +26,6 @@ def extract_area_logic(text):
         if len(m_vals) > 1 and abs(m_vals[-1] - sum(m_vals[:-1])) < 1: return round(m_vals[-1], 3)
         return round(sum(m_vals), 3)
         
-    # Imperial Fallback
     f_segments = re.split(f'(\d+\.?\d*)\s*{f_unit}', text, flags=re.IGNORECASE)
     f_vals = []
     for i in range(1, len(f_segments), 2):
@@ -54,27 +52,48 @@ def apply_excel_formatting(df, writer, sheet_name):
     df.to_excel(writer, sheet_name=sheet_name, index=False)
     worksheet = writer.sheets[sheet_name]
     center_align = Alignment(horizontal='center', vertical='center')
+    
+    # Professional light colors for background highlighting
+    colors = ["E7F3FF", "F2F2F2", "FFF4E5", "E8F5E9", "F3E5F5", "FFFDE7"]
+    
+    color_idx = 0
+    start_row = 2
+    
+    for i in range(2, len(df) + 2):
+        curr_prop = df.iloc[i-2, 0] # Property Column
+        next_prop = df.iloc[i-1, 0] if i-1 < len(df) else None
+        
+        # Apply color to the current row
+        fill = PatternFill(start_color=colors[color_idx % len(colors)], end_color=colors[color_idx % len(colors)], fill_type="solid")
+        for col in range(1, len(df.columns) + 1):
+            worksheet.cell(row=i, column=col).fill = fill
 
-    def merge_cells_for_col(col_idx, group_by_col_indices):
-        start_row = 2
-        for i in range(2, len(df) + 2):
-            curr_key = [df.iloc[i-2, c] for c in group_by_col_indices]
-            next_key = [df.iloc[i-1, c] for c in group_by_col_indices] if i-1 < len(df) else None
-            if curr_key != next_key:
-                if i > start_row:
-                    worksheet.merge_cells(start_row=start_row, start_column=col_idx, end_row=i, end_column=col_idx)
-                    worksheet.cell(row=start_row, column=col_idx).alignment = center_align
-                start_row = i + 1
+        if curr_prop != next_prop:
+            # Merge Property Column
+            if i > start_row:
+                worksheet.merge_cells(start_row=start_row, start_column=1, end_row=i, end_column=1)
+                worksheet.cell(row=start_row, column=1).alignment = center_align
+            
+            # Reset color index for the next property group
+            color_idx += 1
+            start_row = i + 1
 
-    merge_cells_for_col(1, [0])    # Merge Property
-    merge_cells_for_col(2, [0, 1]) # Merge Configuration within Property
+    # Merge Configuration Column logic (Nested within Property)
+    start_row_cfg = 2
+    for i in range(2, len(df) + 2):
+        curr_key = [df.iloc[i-2, 0], df.iloc[i-2, 1]]
+        next_key = [df.iloc[i-1, 0], df.iloc[i-1, 1]] if i-1 < len(df) else None
+        if curr_key != next_key:
+            if i > start_row_cfg:
+                worksheet.merge_cells(start_row=start_row_cfg, start_column=2, end_row=i, end_column=2)
+                worksheet.cell(row=start_row_cfg, column=2).alignment = center_align
+            start_row_cfg = i + 1
 
 # --- STREAMLIT UI ---
 st.set_page_config(page_title="Real Estate Analytics Dashboard", layout="wide")
-st.title("🏠 Real Estate Data Extractor & Advanced Summary")
+st.title("🏠 Property Analytics with Unique Project Coloring")
 
-# Parameters in Sidebar
-st.sidebar.header("Calculation Settings")
+st.sidebar.header("Settings")
 loading_factor = st.sidebar.number_input("Loading Factor", min_value=1.0, value=1.35, step=0.001, format="%.3f")
 t1 = st.sidebar.number_input("1 BHK Threshold (<)", value=600)
 t2 = st.sidebar.number_input("2 BHK Threshold (<)", value=850)
@@ -88,53 +107,32 @@ if uploaded_file:
     desc_col, cons_col, prop_col = clean_cols.get('property description'), clean_cols.get('consideration value'), clean_cols.get('property')
     
     if desc_col and cons_col and prop_col:
-        with st.spinner('Calculating Statistics...'):
-            # 1. Row Level Calculations
+        with st.spinner('Calculating and Coloring Report...'):
             df['Carpet Area (SQ.MT)'] = df[desc_col].apply(extract_area_logic)
             df['Carpet Area (SQ.FT)'] = (df['Carpet Area (SQ.MT)'] * 10.764).round(3)
             df['Saleable Area'] = (df['Carpet Area (SQ.FT)'] * loading_factor).round(3)
             df['APR'] = df.apply(lambda r: round(r[cons_col]/r['Saleable Area'], 3) if r['Saleable Area'] > 0 else 0, axis=1)
             df['Configuration'] = df['Carpet Area (SQ.FT)'].apply(lambda x: determine_config(x, t1, t2, t3))
             
-            # Sort for clean grouping
             valid_df = df[df['Carpet Area (SQ.FT)'] > 0].sort_values([prop_col, 'Configuration', 'Carpet Area (SQ.FT)'])
             
-            # 2. Summary Logic (Group by Project, BHK, and Size)
             summary = valid_df.groupby([prop_col, 'Configuration', 'Carpet Area (SQ.FT)']).agg(
-                Min_APR=('APR', 'min'),
-                Max_APR=('APR', 'max'),
-                Avg_APR=('APR', 'mean'),
+                Min_APR=('APR', 'min'), Max_APR=('APR', 'max'), Avg_APR=('APR', 'mean'),
                 Median_APR=('APR', 'median'),
                 Mode_APR=('APR', lambda x: x.mode().iloc[0] if not x.mode().empty else 0),
                 Property_Count=(prop_col, 'count')
             ).reset_index()
             
-            # Column Renaming
-            summary.columns = [
-                'Property', 'Configuration', 'Carpet Area(SQ.FT)', 
-                'Min. APR', 'Max APR', 'Average of APR', 
-                'Median of APR', 'Mode of APR', 'Count of Property'
-            ]
-            
-            # Precision Rounding
-            stat_cols = ['Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR']
-            summary[stat_cols] = summary[stat_cols].round(3)
+            summary.columns = ['Property', 'Configuration', 'Carpet Area(SQ.FT)', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR', 'Count of Property']
+            summary[['Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR']] = summary[['Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR']].round(3)
 
-            # 3. Multi-Sheet Export
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name='Raw Data', index=False)
                 apply_excel_formatting(summary, writer, 'Summary')
             
             st.success("Analysis Complete!")
-            st.subheader("Summary Preview (Median & Mode Included)")
             st.dataframe(summary.head(20))
-            
-            st.download_button(
-                label="📥 Download Merged Excel Report",
-                data=output.getvalue(),
-                file_name="Property_Summary_Report_Final.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            st.download_button(label="📥 Download Colored Excel Report", data=output.getvalue(), file_name="Property_Summary_Colored.xlsx")
     else:
-        st.error("Required columns missing: 'Property Description', 'Property', 'Consideration Value'.")
+        st.error("Missing required columns.")
