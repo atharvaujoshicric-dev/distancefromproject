@@ -12,11 +12,11 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from webdriver_manager.chrome import ChromeDriverManager
 
-# --- ENHANCED WEB SEARCH LOGIC (Bypassing RERA) ---
-def fetch_project_details_universal(project_name):
+# --- NEW: ADVANCED PROJECT DATA SEARCH ---
+def fetch_project_metadata_live(project_name):
     """
-    Scrapes Google search results to find project specs from 
-    aggregators (MagicBricks, Housing, etc.) without entering the sites.
+    Powerful search-based extraction. It looks for numbers near keywords 
+    like 'floors', 'towers', and 'possession' across search snippets.
     """
     chrome_options = Options()
     chrome_options.add_argument("--headless")
@@ -29,38 +29,38 @@ def fetch_project_details_universal(project_name):
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
         
-        # Comprehensive search query for aggregators
-        search_query = f"{project_name} Pune floor count towers units possession"
-        driver.get(f"https://www.google.com/search?q={search_query.replace(' ', '+')}")
-        time.sleep(3)
+        # Searching via Bing (Less bot-protection for Snippet Reading)
+        search_query = f"{project_name} Pune magicbricks housing possession towers floors units"
+        driver.get(f"https://www.bing.com/search?q={search_query.replace(' ', '+')}")
+        time.sleep(4)
         
-        # Extract all text from search results snippets
-        page_content = driver.find_element(By.TAG_NAME, "body").text.lower()
+        # Capture the entire search result text
+        raw_text = driver.find_element(By.TAG_NAME, "body").text.lower()
         driver.quit()
 
-        # --- DATA EXTRACTION PATTERNS ---
+        # --- DATA PATTERN RECOGNITION ---
         
-        # 1. Amenities (Counting mentions or typical counts)
-        amenities = "30+" if any(x in page_content for x in ["lifestyle", "clubhouse", "gym"]) else "20+"
+        # 1. Amenities (Counting common words or looking for "XX+ amenities")
+        amn_match = re.search(r'(\d+)\s*\+?\s*amenities', raw_text)
+        amenities = f"{amn_match.group(1)}+" if amn_match else "30+"
         
         # 2. Tower Count
-        t_match = re.search(r'(\d+)\s*(?:towers?|wings?|buildings?)', page_content)
+        t_match = re.search(r'(\d+)\s*(?:towers?|wings?|buildings?)', raw_text)
         towers = t_match.group(1) if t_match else "N/A"
         
-        # 3. Floor Count (Improved Regex)
-        # Looks for G+20, 15 Floors, 22 Storey, etc.
-        f_match = re.search(r'(?:g|p)\s*\+\s*(\d+)', page_content)
+        # 3. Floor Count (Looking for G+X, X floors, X storeys)
+        f_match = re.search(r'(?:g|p|b)\s*\+\s*(\d+)', raw_text)
         if not f_match:
-            f_match = re.search(r'(\d+)\s*(?:floors?|storeys?|floored)', page_content)
+            f_match = re.search(r'(\d+)\s*(?:floors?|storeys?|levels?)', raw_text)
         floors = f"G+{f_match.group(1)}" if f_match else "N/A"
         
         # 4. Total Units
-        u_match = re.search(r'(\d{2,4})\s*(?:units?|apartments?|flats?|homes?)', page_content)
+        u_match = re.search(r'(\d{2,4})\s*(?:units?|apartments?|flats?|homes?)', raw_text)
         units = u_match.group(1) if u_match else "N/A"
         
-        # 5. Possession Date
-        p_match = re.search(r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s*20\d{2}', page_content)
-        possession = p_match.group(0).capitalize() if p_match else "N/A"
+        # 5. Possession Date (Regex for Month Year)
+        p_match = re.search(r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s*,?\s*(\d{4})', raw_text)
+        possession = f"{p_match.group(1).capitalize()}, {p_match.group(2)}" if p_match else "N/A"
 
         return [amenities, towers, floors, units, possession]
     except:
@@ -81,20 +81,20 @@ def determine_config(area, t1, t2, t3):
     if area == 0: return "N/A"
     return "1 BHK" if area < t1 else "2 BHK" if area < t2 else "3 BHK" if area < t3 else "4 BHK"
 
-# --- FORMATTING (ALIGNED CENTER, MIDDLE & BLACK BORDERS) ---
+# --- FORMATTING (GLOBAL CENTER ALIGN & BLACK BORDERS) ---
 def apply_excel_formatting(df, writer, sheet_name, is_summary=True, show_extra=False):
     df.to_excel(writer, sheet_name=sheet_name, index=False)
     worksheet = writer.sheets[sheet_name]
-    center_align = Alignment(horizontal='center', vertical='center')
-    black_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+    center = Alignment(horizontal='center', vertical='center')
+    border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
     colors = ["A2D2FF", "FFD6A5", "CAFFBF", "FDFFB6", "FFADAD", "BDB2FF", "9BF6FF"]
 
-    # Apply global alignment and borders
+    # Global Alignment
     for r in range(1, worksheet.max_row + 1):
         for c in range(1, worksheet.max_column + 1):
             cell = worksheet.cell(row=r, column=c)
-            cell.alignment = center_align
-            if is_summary: cell.border = black_border
+            cell.alignment = center
+            if is_summary: cell.border = border
 
     if is_summary:
         color_idx, start_prop, start_cfg = 0, 2, 2
@@ -104,7 +104,6 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True, show_extra=F
             for col in range(1, len(df.columns) + 1): worksheet.cell(row=i, column=col).fill = fill
             
             if curr_p != next_p:
-                # Merge logic for Property and RERA columns
                 m_cols = [1]
                 if show_extra: m_cols.extend(range(len(df.columns)-4, len(df.columns)+1))
                 for c_idx in m_cols:
@@ -112,19 +111,18 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True, show_extra=F
                         worksheet.merge_cells(start_row=start_prop, start_column=c_idx, end_row=i, end_column=c_idx)
                 color_idx, start_prop = color_idx + 1, i + 1
             
-            # Merge Configuration
             if [df.iloc[i-2,0], df.iloc[i-2,1]] != ([df.iloc[i-1,0], df.iloc[i-1,1]] if i-1 < len(df) else None):
                 if i > start_cfg: worksheet.merge_cells(start_row=start_cfg, start_column=2, end_row=i, end_column=2)
                 start_cfg = i + 1
 
 # --- STREAMLIT UI ---
-st.set_page_config(page_title="Real Estate Dashboard", layout="wide")
-st.title("🏠 Automated Property Specialist (Web Scraper Integration)")
+st.set_page_config(page_title="Property Analytics Pro", layout="wide")
+st.title("🏠 Automated Property Analyst (Live Web Search)")
 
 st.sidebar.header("Settings")
 loading = st.sidebar.number_input("Loading Factor", value=1.35)
 t1 = st.sidebar.number_input("1 BHK <", value=600); t2 = st.sidebar.number_input("2 BHK <", value=850); t3 = st.sidebar.number_input("3 BHK <", value=1100)
-show_extra = st.sidebar.checkbox("Fetch Extra Project Details (Live Web Search)")
+show_extra = st.sidebar.checkbox("Fetch Project Details (Live Web Search)")
 
 uploaded_file = st.file_uploader("Upload Raw Excel File", type="xlsx")
 
@@ -134,7 +132,7 @@ if uploaded_file:
     desc, cons, prop = clean_cols.get('property description'), clean_cols.get('consideration value'), clean_cols.get('property')
     
     if desc and cons and prop:
-        with st.spinner('Calculating Areas...'):
+        with st.spinner('Calculating Area Statistics...'):
             df['Carpet Area (SQ.MT)'] = df[desc].apply(extract_area_logic)
             df['Carpet Area (SQ.FT)'] = (df['Carpet Area (SQ.MT)'] * 10.764).round(3)
             df['Saleable Area'] = (df['Carpet Area (SQ.FT)'] * loading).round(3)
@@ -153,8 +151,8 @@ if uploaded_file:
             unique_projects = summary['Property'].unique()
             project_map = {}
             for p in unique_projects:
-                with st.spinner(f"Reading web snippets for: {p}"):
-                    project_map[p] = fetch_project_details_universal(p)
+                with st.spinner(f"Analyzing Web Data for: {p}..."):
+                    project_map[p] = fetch_project_metadata_live(p)
             
             extra_cols = ["Amenities", "Towers", "Floors", "Total Units", "Possession"]
             for i, col in enumerate(extra_cols):
@@ -162,16 +160,14 @@ if uploaded_file:
 
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            # Raw Data sheet (All Center Aligned)
             df.to_excel(writer, sheet_name='Raw Data', index=False)
             ws_raw = writer.sheets['Raw Data']
-            for r in range(1, ws_raw.max_row + 1):
-                for c in range(1, ws_raw.max_column + 1):
+            for r in range(1, ws_raw.max_row+1):
+                for c in range(1, ws_raw.max_column+1):
                     ws_raw.cell(row=r, column=c).alignment = Alignment(horizontal='center', vertical='center')
             
-            # Summary Sheet (Formatted)
             apply_excel_formatting(summary, writer, 'Summary', show_extra=show_extra)
         
-        st.success("Calculations & Web Search Complete!")
+        st.success("Analysis Complete!")
         st.dataframe(summary)
-        st.download_button("📥 Download Excel Report", data=output.getvalue(), file_name="Property_Analysis_Report.xlsx")
+        st.download_button("📥 Download Excel Report", data=output.getvalue(), file_name="Property_Summary_Report.xlsx")
