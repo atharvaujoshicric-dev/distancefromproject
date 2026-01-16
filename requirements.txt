@@ -3,3 +3,5 @@ pandas
 openpyxl
 selenium
 webdriver-manager
+thefuzz
+python-Levenshtein
