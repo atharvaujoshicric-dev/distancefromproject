@@ -6,153 +6,125 @@ import time
 import re
 
 # --- SETUP ---
-st.set_page_config(page_title="Real Estate Dashboard - Pro", layout="wide")
+st.set_page_config(page_title="Real Estate Market Analyzer", layout="wide")
 
 st.title("Project Proximity & Market Intelligence")
-st.markdown("Using **OpenStreetMap** (Free) & **DuckDuckGo** (Free) to analyze your society list.")
+st.markdown("Automated Analysis for Pune Real Estate (Free Version)")
 
-# --- IMPROVED SEARCH LOGIC ---
+# --- LOGIC FUNCTIONS ---
 
-def get_soc_coordinates(society, locality, city):
-    """
-    Tries multiple search combinations to find the society location.
-    """
-    geolocator = Nominatim(user_agent="real_estate_locator_v3")
+def get_soc_coordinates(society, locality, city="Pune"):
+    geolocator = Nominatim(user_agent="pune_re_explorer_v4")
+    # Clean society name for better matching
+    clean_soc = re.sub(r'\b(CHSL|CHS|Society|Phase \d+|Wing [A-Z]|Limited)\b', '', society, flags=re.IGNORECASE).strip()
     
-    # Clean up the society name (removes common suffixes that confuse search engines)
-    clean_soc = re.sub(r'\b(CHSL|CHS|Society|Phase \d+|Wing [A-Z])\b', '', society, flags=re.IGNORECASE).strip()
-    
-    # List of queries to try in order of specificity
-    queries = [
-        f"{society}, {locality}, {city}",         # 1. Full Specific (Exact)
-        f"{clean_soc}, {locality}, {city}",       # 2. Cleaned Society + Locality
-        f"{society}, {city}",                     # 3. Society + City
-        f"{locality}, {city}"                     # 4. Fallback: Just the Locality
-    ]
+    queries = [f"{society}, {locality}, {city}", f"{clean_soc}, {locality}, {city}", f"{locality}, {city}"]
     
     for q in queries:
         try:
             location = geolocator.geocode(q, timeout=10)
-            if location:
-                return (location.latitude, location.longitude), q
-        except:
-            continue
-        time.sleep(1) # Respect Nominatim's 1-second rule
-        
+            if location: return (location.latitude, location.longitude), q
+        except: continue
+        time.sleep(1.1) 
     return None, None
 
 def extract_coords_from_url(url):
-    """Extracts Lat/Long from a Google Maps Link."""
     try:
-        if "goo.gl" in url or "maps.app.goo.gl" in url or "googleusercontent" in url:
+        if any(x in url for x in ["goo.gl", "googleusercontent", "maps.app.goo.gl"]):
             response = requests.get(url, allow_redirects=True, timeout=10)
             url = response.url
-        
         match = re.search(r'@([-.\d]+),([-.\d]+)', url)
-        if match:
-            return float(match.group(1)), float(match.group(2))
-        
+        if match: return float(match.group(1)), float(match.group(2))
         match_alt = re.search(r'!3d([-.\d]+)!4d([-.\d]+)', url)
-        if match_alt:
-            return float(match_alt.group(1)), float(match_alt.group(2))
-    except:
-        pass
+        if match_alt: return float(match_alt.group(1)), float(match_alt.group(2))
+    except: pass
     return None
 
-def get_osrm_distance(origin_coords, dest_coords):
-    """Calculates road distance using OSRM."""
+def fetch_market_info(society, locality, city="Pune"):
+    """
+    Enhanced Free Scraper for Price and BHK
+    """
+    query = f"{society} {locality} {city} price configurations 1bhk 2bhk 3bhk 4bhk"
     try:
-        url = f"http://router.project-osrm.org/route/v1/driving/{origin_coords[1]},{origin_coords[0]};{dest_coords[1]},{dest_coords[0]}?overview=false"
-        r = requests.get(url, timeout=10)
-        data = r.json()
-        if data['code'] == 'Ok':
-            return round(data['routes'][0]['distance'] / 1000, 2)
-    except:
-        return "N/A"
-    return "N/A"
-
-def fetch_market_info(society, locality, city):
-    """Searches web snippets for Price and BHK."""
-    query = f"{society} {locality} {city} price BHK"
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        # Using a slightly different search endpoint for better snippets
         res = requests.get(f"https://html.duckduckgo.com/html/?q={query}", headers=headers, timeout=10)
         text = res.text.lower()
         
-        # Extract BHK
-        bhk = re.findall(r'(\d\s?bhk)', text)
-        config = ", ".join(sorted(list(set(bhk)))).upper() if bhk else "1, 2, 3 BHK"
+        # 1. Advanced BHK Extraction (Look for 1 to 5 BHK)
+        configs_found = sorted(list(set(re.findall(r'([1-5]\s?bhk)', text))))
+        final_config = ", ".join(configs_found).upper() if configs_found else "2, 3 BHK (Check Site)"
         
-        # Extract Price
-        price_match = re.findall(r'(\d+\.?\d*\s?(?:cr|lakh|lac))', text)
-        price = price_match[0].strip() if price_match else "See Website"
+        # 2. Advanced Price Extraction (Look for specific Indian Currency formats)
+        # Matches: 1.5 Cr, 85 Lakh, 1.25 Crore, etc.
+        price_patterns = [
+            r'(\d+\.?\d*\s?cr(?:ore)?)', 
+            r'(\d+\.?\d*\s?lakh(?:s)?)',
+            r'(\d+\.?\d*\s?lac(?:s)?)',
+            r'(?:rs\.?|₹)\s?(\d+\.?\d*\s?(?:cr|lakh|lac|l))'
+        ]
         
-        return price, config
+        prices = []
+        for pattern in price_patterns:
+            found = re.findall(pattern, text)
+            if found: prices.extend(found)
+        
+        # Clean and pick the most relevant price range
+        if prices:
+            unique_prices = sorted(list(set(prices)))
+            final_price = " - ".join(unique_prices[:2]) # Shows a range if two prices found
+        else:
+            final_price = "Price on Request"
+            
+        return final_price, final_config
     except:
         return "N/A", "N/A"
 
 # --- STREAMLIT UI ---
 with st.sidebar:
-    st.header("1. Project Location")
-    proj_link = st.text_input("Paste Google Maps Link")
-    st.divider()
-    st.header("2. Search Options")
-    st.info("The tool will combine 'society' + 'locality' + 'city' for the best match.")
-    run_btn = st.button("Generate Dashboard")
+    st.header("Settings")
+    proj_link = st.text_input("Project Google Maps Link")
+    run_btn = st.button("Start Analysis")
 
-uploaded_file = st.file_uploader("Upload your CSV/Excel", type=['csv', 'xlsx'])
+uploaded_file = st.file_uploader("Upload Society Excel/CSV", type=['csv', 'xlsx'])
 
 if uploaded_file and proj_link and run_btn:
-    # Load Data
     df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
-    
-    # Get Project Point
     proj_coords = extract_coords_from_url(proj_link)
     
     if not proj_coords:
-        st.error("Invalid Google Maps Link. Please copy the URL from your browser address bar.")
+        st.error("Could not read link coordinates.")
     else:
-        st.success(f"Target Project Location identified.")
-        
         results = []
         progress = st.progress(0)
         status = st.empty()
         
         for idx, row in df.iterrows():
-            soc = str(row.get('society', ''))
-            loc = str(row.get('locality', ''))
-            city = str(row.get('city', 'Pune'))
+            soc, loc = str(row.get('society', '')), str(row.get('locality', ''))
+            status.text(f"Analyzing: {soc}...")
             
-            status.text(f"Searching: {soc} in {loc}...")
-            
-            # Step 1: Geocode
-            coords, found_via = get_soc_coordinates(soc, loc, city)
-            
-            # Step 2: Distance
+            # Geocoding & Distance
+            coords, _ = get_soc_coordinates(soc, loc)
             dist_val = "Not Found"
             if coords:
-                dist_val = get_osrm_distance(proj_coords, coords)
-                if isinstance(dist_val, float):
-                    dist_val = f"{dist_val} km"
+                try:
+                    url = f"http://router.project-osrm.org/route/v1/driving/{proj_coords[1]},{proj_coords[0]};{coords[1]},{coords[0]}?overview=false"
+                    d_res = requests.get(url).json()
+                    dist_val = f"{round(d_res['routes'][0]['distance']/1000, 2)} km"
+                except: pass
             
-            # Step 3: Market Data
-            price, config = fetch_market_info(soc, loc, city)
+            # Market Data
+            price, config = fetch_market_info(soc, loc)
             
             results.append({
                 "Distance from project": dist_val,
                 "Ticket Size": price,
-                "Configurations": config,
-                "Matched Via": found_via if found_via else "None"
+                "Configurations": config
             })
             
             progress.progress((idx + 1) / len(df))
+            time.sleep(0.5) # Balanced delay
             
-        # Merge results
-        res_df = pd.concat([df, pd.DataFrame(results)], axis=1)
-        
-        st.subheader("Analysis Result")
-        st.dataframe(res_df)
-        
-        # Download
-        csv = res_df.to_csv(index=False).encode('utf-8')
-        st.download_button("Download Updated Excel", csv, "final_project_analysis.csv", "text/csv")
+        final_df = pd.concat([df, pd.DataFrame(results)], axis=1)
+        st.dataframe(final_df)
+        st.download_button("Download Report", final_df.to_csv(index=False), "report.csv")
